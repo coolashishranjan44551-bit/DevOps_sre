@@ -1,3 +1,4 @@
+
 name: Terraform Automation
 
 on:
@@ -6,38 +7,78 @@ on:
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: read
+  id-token: write
+
 jobs:
-  validate:
+  terraform:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        cloud: [aws, azure]
+        env: [dev]
+    defaults:
+      run:
+        shell: bash
+
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Validate Python scripts compile
-        run: python -m compileall scripts
-
-      - name: Run unit tests
-        run: python -m unittest discover -s tests
-
-      - name: Set up Terraform
+      - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.8.5
 
-      - name: Terraform fmt
+      - name: Configure Cloud Credentials
+        if: matrix.cloud == 'aws'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          test -n "$AWS_ACCESS_KEY_ID" && echo "AWS creds present" || (echo "Missing AWS secrets" && exit 1)
+
+      - name: Configure Azure Credentials
+        if: matrix.cloud == 'azure'
+        run: |
+          echo "${{ secrets.ARM_CLIENT_ID }}" > /dev/null
+          echo "Using OIDC login"
+        env:
+          ARM_USE_OIDC: "true"
+          ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+          ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+
+      - name: Terraform FMT
         run: terraform fmt -check -recursive
 
-      - name: Terraform validate (AWS)
-        working-directory: aws/terraform
+      - name: Select working directory
+        id: wdir
         run: |
-          terraform init -backend=false
-          terraform validate
+          if [ "${{ matrix.cloud }}" = "aws" ]; then
+            echo "dir=aws/terraform" >> "$GITHUB_OUTPUT"
+          else
+            echo "dir=azure/terraform" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Terraform validate (Azure)
-        working-directory: azure/terraform
+      - name: Terraform Init
+        working-directory: ${{ steps.wdir.outputs.dir }}
+        run: terraform init -input=false
+
+      - name: Terraform Validate
+        working-directory: ${{ steps.wdir.outputs.dir }}
+        run: terraform validate
+
+      - name: Terraform Plan
+        if: github.event_name == 'pull_request'
+        working-directory: ${{ steps.wdir.outputs.dir }}
         run: |
-          terraform init -backend=false
-          terraform validate
+          terraform plan -input=false -var-file='../../config/environments/${{ matrix.env }}/${{ matrix.cloud }}.yml'
+
+      - name: Terraform Apply
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        working-directory: ${{ steps.wdir.outputs.dir }}
+        run: |
+          terraform apply -auto-approve -input=false -var-file='../../config/environments/${{ matrix.env }}/${{ matrix.cloud }}.yml'

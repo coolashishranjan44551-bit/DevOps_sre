@@ -1,0 +1,7 @@
+
+project: devops-sre
+environment: dev
+location: Central India
+tags:
+  owner: ashish
+  env: dev
