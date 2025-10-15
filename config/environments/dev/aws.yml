@@ -1,0 +1,7 @@
+
+project: devops-sre
+environment: dev
+region: ap-south-1
+tags:
+  owner: ashish
+  env: dev
